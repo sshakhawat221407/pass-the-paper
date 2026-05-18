@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MockDataProvider, useMockData } from './utils/MockDataContext';
+import { authApi, usersApi, setToken, clearToken, getToken } from './services/api';
 import { Home } from './components/Home';
 import { Browse } from './components/Browse';
 import { Upload } from './components/Upload';
@@ -9,7 +9,6 @@ import { Login } from './components/Login';
 import { Register } from './components/Register';
 import { AdminDashboardEnhanced } from './components/AdminDashboardEnhanced';
 import { SplashScreen } from './components/SplashScreen';
-import { SetupPage } from './components/SetupPage';
 import { StudentLayout } from './components/StudentLayout';
 import { CartPageScreen } from './components/screens/CartPageScreen';
 import { CheckoutPageScreen } from './components/screens/CheckoutPageScreen';
@@ -44,61 +43,64 @@ export type User = {
   idCardStatus?: 'none' | 'pending' | 'approved' | 'rejected';
   sellerRating?: number;
   totalRatings?: number;
+  restrictions?: {
+    canUpload: boolean;
+    canPurchase: boolean;
+    canComment: boolean;
+  };
 };
 
 export type NavigationTab = 'home' | 'browse' | 'upload' | 'wallet' | 'profile';
 export type StudentPage =
-  | 'home'
-  | 'browse'
-  | 'upload'
-  | 'wallet'
-  | 'profile'
-  | 'cart'
-  | 'notifications'
-  | 'checkout'
-  | 'membership'
-  | 'history'
-  | 'my-uploads'
-  | 'feedback'
-  | 'edit-profile'
-  | 'settings';
+  | 'home' | 'browse' | 'upload' | 'wallet' | 'profile'
+  | 'cart' | 'notifications' | 'checkout' | 'membership'
+  | 'history' | 'my-uploads' | 'feedback' | 'edit-profile' | 'settings';
 
 export type Screen = StudentPage;
 
-function AppContent() {
+function App() {
   const [showSplash, setShowSplash] = useState(true);
-  const [view, setView] = useState<'login' | 'register' | 'app' | 'admin' | 'setup'>('login');
+  const [view, setView] = useState<'login' | 'register' | 'app' | 'admin'>('login');
   const [activeTab, setActiveTab] = useState<NavigationTab>('home');
   const [currentPage, setCurrentPage] = useState<StudentPage>('home');
-  const mockData = useMockData();
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [loadingSession, setLoadingSession] = useState(true);
 
+  // ── On mount: restore session from saved token ──────────────
   useEffect(() => {
-    if (mockData.currentUser) {
-      if (mockData.currentUser.isAdmin) {
-        setView('admin');
-      } else {
-        setView('app');
+    const restoreSession = async () => {
+      const token = getToken();
+      if (!token) {
+        setLoadingSession(false);
+        return;
       }
-      setShowSplash(false);
-    }
-  }, [mockData.currentUser]);
+      try {
+        const user = await usersApi.me();
+        setCurrentUser(user);
+        setView(user.isAdmin ? 'admin' : 'app');
+        setShowSplash(false);
+      } catch {
+        clearToken(); // token expired or invalid
+      } finally {
+        setLoadingSession(false);
+      }
+    };
+    restoreSession();
+  }, []);
 
+  // ── Auth handlers ────────────────────────────────────────────
   const handleLogin = async (email: string, password: string) => {
-    try {
-      await mockData.login(email, password);
-      setView('app');
-    } catch (error: any) {
-      throw new Error(error.message || 'Login failed');
-    }
+    const { token, user } = await authApi.login(email, password);
+    setToken(token);
+    setCurrentUser(user);
+    setView('app');
   };
 
   const handleAdminLogin = async (email: string, password: string) => {
-    try {
-      await mockData.adminLogin(email, password);
-      setView('admin');
-    } catch (error: any) {
-      throw new Error(error.message || 'Admin login failed');
-    }
+    const { token, user } = await authApi.adminLogin(email, password);
+    setToken(token);
+    setCurrentUser(user);
+    setView('admin');
   };
 
   const handleRegister = async (
@@ -108,219 +110,184 @@ function AppContent() {
     university: string,
     studentId: string
   ) => {
-    try {
-      await mockData.register(email, password, name, university, studentId);
-      setView('app');
-    } catch (error: any) {
-      throw new Error(error.message || 'Registration failed');
-    }
+    const { token, user } = await authApi.register({ email, password, name, university, studentId });
+    setToken(token);
+    setCurrentUser(user);
+    setView('app');
   };
 
   const handleLogout = () => {
-    mockData.logout();
+    clearToken();
+    setCurrentUser(null);
     setView('login');
     setActiveTab('home');
     setCurrentPage('home');
   };
 
+  const handleUserUpdate = (updatedUser: User) => {
+    setCurrentUser(updatedUser);
+  };
+
+  // ── Loading / Splash ─────────────────────────────────────────
+  if (loadingSession) return null; // or a loading spinner
+
   if (showSplash) {
     return <SplashScreen onGetStarted={() => setShowSplash(false)} />;
   }
 
+  // ── Login ────────────────────────────────────────────────────
   if (view === 'login') {
     return (
-      <Login
-        onLogin={handleLogin}
-        onAdminLogin={handleAdminLogin}
-        onNavigateToRegister={() => setView('register')}
-        onNavigateBack={() => setShowSplash(true)}
-      />
+      <>
+        <Login
+          onLogin={handleLogin}
+          onAdminLogin={handleAdminLogin}
+          onNavigateToRegister={() => setView('register')}
+          onNavigateBack={() => setShowSplash(true)}
+        />
+        <Toaster />
+      </>
     );
   }
 
+  // ── Register ─────────────────────────────────────────────────
   if (view === 'register') {
     return (
-      <Register
-        onRegister={handleRegister}
-        onNavigateToLogin={() => setView('login')}
-      />
-    );
-  }
-
-  if (view === 'admin' && mockData.currentUser?.isAdmin) {
-    return (
-      <AdminDashboardEnhanced
-        user={mockData.currentUser}
-        onLogout={handleLogout}
-      />
-    );
-  }
-
-  if (view === 'app' && mockData.currentUser) {
-    if (mockData.currentUser.isBanned) {
-      return (
-        <BannedUserScreen
-          user={mockData.currentUser}
-          onLogout={handleLogout}
+      <>
+        <Register
+          onRegister={handleRegister}
+          onNavigateToLogin={() => setView('login')}
         />
+        <Toaster />
+      </>
+    );
+  }
+
+  // ── Admin ────────────────────────────────────────────────────
+  if (view === 'admin' && currentUser?.isAdmin) {
+    return (
+      <>
+        <AdminDashboardEnhanced user={currentUser} onLogout={handleLogout} />
+        <Toaster />
+      </>
+    );
+  }
+
+  // ── Student App ───────────────────────────────────────────────
+  if (view === 'app' && currentUser) {
+    if (currentUser.isBanned) {
+      return (
+        <>
+          <BannedUserScreen user={currentUser} onLogout={handleLogout} />
+          <Toaster />
+        </>
       );
     }
 
+    const dashboardPages: StudentPage[] = [
+      'profile', 'edit-profile', 'history',
+      'my-uploads', 'feedback', 'membership', 'settings',
+    ];
+
     return (
-      <StudentLayout
-        onCartClick={() => setCurrentPage('cart')}
-        onNotificationsClick={() => setCurrentPage('notifications')}
-        activeTab={activeTab}
-        onTabChange={(tab) => {
-          setActiveTab(tab);
-          setCurrentPage(tab);
-        }}
-        onNavigate={(screen) => {
-          setCurrentPage(screen);
-          const dashboardPages: StudentPage[] = [
-            'profile',
-            'edit-profile',
-            'history',
-            'my-uploads',
-            'feedback',
-            'membership',
-            'settings',
-          ];
-          if (dashboardPages.includes(screen)) {
-            setActiveTab('profile');
-          }
-        }}
-        onLogout={handleLogout}
-        currentPage={currentPage}
-      >
-        {currentPage === 'home' && <Home user={mockData.currentUser} />}
-        {currentPage === 'browse' && <Browse user={mockData.currentUser} />}
-        {currentPage === 'upload' && <Upload user={mockData.currentUser} />}
-        {currentPage === 'wallet' && <Wallet user={mockData.currentUser} />}
+      <>
+        <StudentLayout
+          onCartClick={() => setCurrentPage('cart')}
+          onNotificationsClick={() => setCurrentPage('notifications')}
+          activeTab={activeTab}
+          onTabChange={(tab) => { setActiveTab(tab); setCurrentPage(tab); }}
+          onNavigate={(screen) => {
+            setCurrentPage(screen);
+            if (dashboardPages.includes(screen)) setActiveTab('profile');
+          }}
+          onLogout={handleLogout}
+          currentPage={currentPage}
+        >
+          {currentPage === 'home'    && <Home user={currentUser} />}
+          {currentPage === 'browse'  && <Browse user={currentUser} />}
+          {currentPage === 'upload'  && <Upload user={currentUser} />}
+          {currentPage === 'wallet'  && <Wallet user={currentUser} />}
 
-        {currentPage === 'profile' && (
-          <Profile
-            user={mockData.currentUser}
-            onLogout={handleLogout}
-            onUserUpdate={(updatedUser) => {
-              mockData.updateUser(updatedUser.id, updatedUser);
-            }}
-            onNavigateToHistory={() => {
-              setCurrentPage('history');
-              setActiveTab('profile');
-            }}
-            onNavigateToUploads={() => {
-              setCurrentPage('my-uploads');
-              setActiveTab('profile');
-            }}
-            onNavigateToFeedback={() => {
-              setCurrentPage('feedback');
-              setActiveTab('profile');
-            }}
-            onNavigateToMembership={() => {
-              setCurrentPage('membership');
-              setActiveTab('profile');
-            }}
-          />
-        )}
+          {currentPage === 'profile' && (
+            <Profile
+              user={currentUser}
+              onLogout={handleLogout}
+              onUserUpdate={handleUserUpdate}
+              onNavigateToHistory={() => { setCurrentPage('history');    setActiveTab('profile'); }}
+              onNavigateToUploads={() => { setCurrentPage('my-uploads'); setActiveTab('profile'); }}
+              onNavigateToFeedback={() => { setCurrentPage('feedback');  setActiveTab('profile'); }}
+              onNavigateToMembership={() => { setCurrentPage('membership'); setActiveTab('profile'); }}
+            />
+          )}
 
-        {currentPage === 'cart' && (
-          <CartPageScreen
-            user={mockData.currentUser}
-            onBack={() => {
-              if (activeTab === 'home' || activeTab === 'browse') {
-                setCurrentPage(activeTab);
-              } else {
-                setCurrentPage('home');
-              }
-            }}
-            onCheckout={() => setCurrentPage('checkout')}
-          />
-        )}
+          {currentPage === 'cart' && (
+            <CartPageScreen
+              user={currentUser}
+              onBack={() => setCurrentPage(activeTab === 'browse' ? 'browse' : 'home')}
+              onCheckout={() => setCurrentPage('checkout')}
+            />
+          )}
 
-        {currentPage === 'checkout' && (
-          <CheckoutPageScreen
-            user={mockData.currentUser}
-            onBack={() => setCurrentPage('cart')}
-            onSuccess={() => {
-              setCurrentPage('home');
-              setActiveTab('home');
-            }}
-          />
-        )}
+          {currentPage === 'checkout' && (
+            <CheckoutPageScreen
+              user={currentUser}
+              onBack={() => setCurrentPage('cart')}
+              onSuccess={() => { setCurrentPage('home'); setActiveTab('home'); }}
+            />
+          )}
 
-        {currentPage === 'notifications' && (
-          <NotificationsPageScreen
-            user={mockData.currentUser}
-            onBack={() => {
-              if (activeTab === 'home' || activeTab === 'browse') {
-                setCurrentPage(activeTab);
-              } else {
-                setCurrentPage('home');
-              }
-            }}
-          />
-        )}
+          {currentPage === 'notifications' && (
+            <NotificationsPageScreen
+              user={currentUser}
+              onBack={() => setCurrentPage(activeTab === 'browse' ? 'browse' : 'home')}
+            />
+          )}
 
-        {currentPage === 'membership' && (
-          <MembershipPageScreen
-            user={mockData.currentUser}
-            onBack={() => setCurrentPage('profile')}
-          />
-        )}
+          {currentPage === 'membership' && (
+            <MembershipPageScreen user={currentUser} onBack={() => setCurrentPage('profile')} />
+          )}
 
-        {currentPage === 'history' && (
-          <PurchaseHistoryScreen
-            onNavigate={(screen) => setCurrentPage(screen)}
-            onBack={() => setCurrentPage('profile')}
-          />
-        )}
+          {currentPage === 'history' && (
+            <PurchaseHistoryScreen
+              onNavigate={(screen) => setCurrentPage(screen)}
+              onBack={() => setCurrentPage('profile')}
+            />
+          )}
 
-        {currentPage === 'my-uploads' && (
-          <MyUploadsScreen
-            onNavigate={(screen) => setCurrentPage(screen)}
-            onBack={() => setCurrentPage('profile')}
-          />
-        )}
+          {currentPage === 'my-uploads' && (
+            <MyUploadsScreen
+              onNavigate={(screen) => setCurrentPage(screen)}
+              onBack={() => setCurrentPage('profile')}
+            />
+          )}
 
-        {currentPage === 'feedback' && (
-          <FeedbackScreen
-            onNavigate={(screen) => setCurrentPage(screen)}
-            onBack={() => setCurrentPage('profile')}
-          />
-        )}
+          {currentPage === 'feedback' && (
+            <FeedbackScreen
+              onNavigate={(screen) => setCurrentPage(screen)}
+              onBack={() => setCurrentPage('profile')}
+            />
+          )}
 
-        {currentPage === 'edit-profile' && (
-          <EditProfileScreen
-            onNavigate={(screen) => setCurrentPage(screen)}
-            onBack={() => setCurrentPage('profile')}
-          />
-        )}
+          {currentPage === 'edit-profile' && (
+            <EditProfileScreen
+              onNavigate={(screen) => setCurrentPage(screen)}
+              onBack={() => setCurrentPage('profile')}
+            />
+          )}
 
-        {currentPage === 'settings' && (
-          <SettingsScreen
-            onNavigate={(screen) => setCurrentPage(screen)}
-            onBack={() => setCurrentPage('profile')}
-          />
-        )}
-      </StudentLayout>
+          {currentPage === 'settings' && (
+            <SettingsScreen
+              onNavigate={(screen) => setCurrentPage(screen)}
+              onBack={() => setCurrentPage('profile')}
+            />
+          )}
+        </StudentLayout>
+        <Toaster />
+      </>
     );
   }
 
-  if (view === 'setup') {
-    return <SetupPage onSetupComplete={() => setView('login')} />;
-  }
-
   return null;
-}
-
-function App() {
-  return (
-    <MockDataProvider>
-      <AppContent />
-      <Toaster />
-    </MockDataProvider>
-  );
 }
 
 export default App;
