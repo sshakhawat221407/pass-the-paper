@@ -1,6 +1,5 @@
 // ============================================================
 // API Service — connects React frontend to Spring Boot backend
-// Base URL comes from .env: VITE_API_URL
 // ============================================================
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api';
@@ -14,6 +13,46 @@ export function setToken(token: string) {
 }
 export function clearToken() {
   localStorage.removeItem('ptp_token');
+}
+
+// ─── Normalize backend user → frontend User shape ─────────────
+export function normalizeUser(u: any) {
+  if (!u) return u;
+  return {
+    ...u,
+    id: String(u.id),
+    walletBalance: Number(u.walletBalance ?? 0),
+    pendingBalance: Number(u.pendingBalance ?? 0),
+    rewardPoints: Number(u.rewardPoints ?? 0),
+    sellerRating: Number(u.sellerRating ?? 0),
+    totalRatings: Number(u.totalRatings ?? 0),
+    isVerified: Boolean(u.isVerified),
+    isAdmin: Boolean(u.isAdmin),
+    isBanned: Boolean(u.isBanned),
+    restrictions: {
+      canUpload:   u.canUpload   !== undefined ? Boolean(u.canUpload)   : (u.restrictions?.canUpload   ?? true),
+      canPurchase: u.canPurchase !== undefined ? Boolean(u.canPurchase) : (u.restrictions?.canPurchase ?? true),
+      canComment:  u.canComment  !== undefined ? Boolean(u.canComment)  : (u.restrictions?.canComment  ?? true),
+    },
+    membershipType:   u.membershipType   || 'free',
+    membershipExpiry: u.membershipExpiry || undefined,
+    idCardStatus:     u.idCardStatus     || 'none',
+  };
+}
+
+// ─── Normalize resource ───────────────────────────────────────
+export function normalizeResource(r: any) {
+  if (!r) return r;
+  return {
+    ...r,
+    id:         String(r.id),
+    uploadedBy: String(r.uploadedBy || r.uploadedById || ''),
+    price:      Number(r.price     ?? 0),
+    downloads:  Number(r.downloads ?? 0),
+    rating:     Number(r.rating    ?? 0),
+    priceType:  r.priceType || 'money',
+    status:     r.status    || 'pending',
+  };
 }
 
 // ─── Core fetch wrapper ──────────────────────────────────────
@@ -43,40 +82,45 @@ async function request<T>(
     throw new Error(msg);
   }
 
-  // 204 No Content
   if (res.status === 204) return undefined as unknown as T;
   return res.json();
 }
 
 // ─── Auth ────────────────────────────────────────────────────
 export const authApi = {
-  login: (email: string, password: string) =>
-    request<{ token: string; user: any }>('/auth/login', {
+  login: async (email: string, password: string) => {
+    const data = await request<{ token: string; user: any }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
-    }, false),
+    }, false);
+    return { token: data.token, user: normalizeUser(data.user) };
+  },
 
-  adminLogin: (email: string, password: string) =>
-    request<{ token: string; user: any }>('/auth/admin/login', {
+  adminLogin: async (email: string, password: string) => {
+    const data = await request<{ token: string; user: any }>('/auth/admin/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
-    }, false),
+    }, false);
+    return { token: data.token, user: normalizeUser(data.user) };
+  },
 
-  register: (data: {
+  register: async (payload: {
     email: string; password: string;
     name: string; university: string; studentId: string;
-  }) =>
-    request<{ token: string; user: any }>('/auth/register', {
+  }) => {
+    const data = await request<{ token: string; user: any }>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify(data),
-    }, false),
+      body: JSON.stringify(payload),
+    }, false);
+    return { token: data.token, user: normalizeUser(data.user) };
+  },
 };
 
 // ─── Users ───────────────────────────────────────────────────
 export const usersApi = {
-  me: () => request<any>('/users/me'),
-  update: (data: Partial<any>) =>
-    request<any>('/users/me', { method: 'PUT', body: JSON.stringify(data) }),
+  me: async () => normalizeUser(await request<any>('/users/me')),
+  update: async (data: Partial<any>) =>
+    normalizeUser(await request<any>('/users/me', { method: 'PUT', body: JSON.stringify(data) })),
   changePassword: (currentPassword: string, newPassword: string) =>
     request<void>('/users/me/password', {
       method: 'PUT',
@@ -87,9 +131,14 @@ export const usersApi = {
       method: 'POST',
       body: JSON.stringify({ imageBase64 }),
     }),
-  // Admin
-  getAll: () => request<any[]>('/admin/users'),
-  getPending: () => request<any[]>('/admin/users/pending'),
+  getAll: async () => {
+    const list = await request<any[]>('/admin/users');
+    return list.map(normalizeUser);
+  },
+  getPending: async () => {
+    const list = await request<any[]>('/admin/users/pending');
+    return list.map(normalizeUser);
+  },
   verify: (userId: string, approve: boolean) =>
     request<void>(`/admin/users/${userId}/verify`, {
       method: 'PUT',
@@ -120,20 +169,30 @@ export const usersApi = {
 
 // ─── Resources ───────────────────────────────────────────────
 export const resourcesApi = {
-  getAll: (category?: string, search?: string) => {
+  getAll: async (category?: string, search?: string) => {
     const params = new URLSearchParams();
     if (category && category !== 'All') params.set('category', category);
     if (search) params.set('search', search);
     const qs = params.toString();
-    return request<any[]>(`/resources${qs ? '?' + qs : ''}`);
+    const list = await request<any[]>(`/resources${qs ? '?' + qs : ''}`);
+    return list.map(normalizeResource);
   },
-  getFeatured: () => request<any[]>('/resources/featured'),
-  getById: (id: string) => request<any>(`/resources/${id}`),
-  create: (data: any) =>
-    request<any>('/resources', { method: 'POST', body: JSON.stringify(data) }),
-  getMyUploads: () => request<any[]>('/resources/my-uploads'),
-  // Admin
-  getPending: () => request<any[]>('/admin/resources/pending'),
+  getFeatured: async () => {
+    const list = await request<any[]>('/resources/featured');
+    return list.map(normalizeResource);
+  },
+  getById: async (id: string) =>
+    normalizeResource(await request<any>(`/resources/${id}`)),
+  create: async (data: any) =>
+    normalizeResource(await request<any>('/resources', { method: 'POST', body: JSON.stringify(data) })),
+  getMyUploads: async () => {
+    const list = await request<any[]>('/resources/my-uploads');
+    return list.map(normalizeResource);
+  },
+  getPending: async () => {
+    const list = await request<any[]>('/admin/resources/pending');
+    return list.map(normalizeResource);
+  },
   approve: (id: string, approve: boolean) =>
     request<void>(`/admin/resources/${id}/approve`, {
       method: 'PUT',
@@ -177,7 +236,6 @@ export const transactionsApi = {
       method: 'POST',
       body: JSON.stringify({ points, bdtCost }),
     }),
-  // Admin
   getAll: () => request<any[]>('/admin/transactions'),
   approve: (id: string) =>
     request<void>(`/admin/transactions/${id}/approve`, { method: 'PUT' }),
@@ -192,7 +250,6 @@ export const withdrawalsApi = {
     request<any>('/withdrawals', { method: 'POST', body: JSON.stringify(data) }),
   cancel: (id: string) =>
     request<void>(`/withdrawals/${id}/cancel`, { method: 'PUT' }),
-  // Admin
   approve: (id: string) =>
     request<void>(`/admin/withdrawals/${id}/approve`, { method: 'PUT' }),
   reject: (id: string) =>
@@ -224,7 +281,6 @@ export const appealsApi = {
   getMine: () => request<any[]>('/appeals'),
   create: (data: any) =>
     request<any>('/appeals', { method: 'POST', body: JSON.stringify(data) }),
-  // Admin
   getAll: () => request<any[]>('/admin/appeals'),
   review: (id: string, approve: boolean, adminResponse?: string) =>
     request<void>(`/admin/appeals/${id}/review`, {
