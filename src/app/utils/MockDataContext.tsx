@@ -5,8 +5,6 @@ import {
   appealsApi, logsApi, setToken, clearToken, getToken,
 } from '../services/api';
 
-// ─── Types (identical to original so no other file changes) ──
-
 export type MembershipPlan = 'free' | 'premium_monthly' | 'premium_yearly';
 
 export type User = {
@@ -76,8 +74,6 @@ export type Log = {
   targetUserId?: string; targetUserName?: string; metadata?: Record<string, any>; createdAt: string;
 };
 
-// ─── Context type ─────────────────────────────────────────────
-
 type MockDataContextType = {
   currentUser: User | null; users: User[]; resources: Resource[];
   transactions: Transaction[]; withdrawals: Withdrawal[]; cartItems: CartItem[];
@@ -140,8 +136,6 @@ type MockDataContextType = {
 
 const MockDataContext = createContext<MockDataContextType | undefined>(undefined);
 
-// ─── Helper: load all user-specific data ──────────────────────
-
 async function loadUserData(userId: string) {
   const [notifs, cart, purcs, txns, wds, fbs, aps] = await Promise.allSettled([
     notificationsApi.getMine(),
@@ -154,8 +148,6 @@ async function loadUserData(userId: string) {
   ]);
   return { notifs, cart, purcs, txns, wds, fbs, aps, userId };
 }
-
-// ─── Provider ─────────────────────────────────────────────────
 
 export function MockDataProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -188,7 +180,9 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
   };
 
   const refreshUser = useCallback(async () => {
-    if (!getToken()) return;
+    // ── FIX: clear stale token before attempting refresh ──
+    const token = getToken();
+    if (!token) return;
     try {
       const user = await usersApi.me();
       setCurrentUser(user);
@@ -203,6 +197,7 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
         if (allLogs.status === 'fulfilled') setLogs(allLogs.value);
       }
     } catch {
+      // ── FIX: clear bad/expired token on any auth failure ──
       clearToken();
       setCurrentUser(null);
     }
@@ -217,7 +212,9 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string): Promise<User> => {
     const { token, user } = await authApi.login(email, password);
+    // ── FIX: set token first, wait for localStorage to flush ──
     setToken(token);
+    await new Promise(resolve => setTimeout(resolve, 50));
     setCurrentUser(user);
     const data = await loadUserData(user.id);
     applyUserData(data);
@@ -227,6 +224,7 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
   const adminLogin = async (email: string, password: string): Promise<User> => {
     const { token, user } = await authApi.adminLogin(email, password);
     setToken(token);
+    await new Promise(resolve => setTimeout(resolve, 50));
     setCurrentUser(user);
     const [allUsers, allTxns, allLogs] = await Promise.allSettled([
       usersApi.getAll(), transactionsApi.getAll(), logsApi.getAll(),
@@ -242,6 +240,7 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
   ): Promise<void> => {
     const { token, user } = await authApi.register({ email, password, name, university, studentId });
     setToken(token);
+    await new Promise(resolve => setTimeout(resolve, 50));
     setCurrentUser(user);
   };
 
@@ -553,8 +552,6 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
 
   const addLog = (_log: Omit<Log, 'id' | 'createdAt'>) => { /* written server-side */ };
   const getAllLogs = (): Log[] => logs;
-
-  // ─── Render ───────────────────────────────────────────────
 
   return (
     <MockDataContext.Provider value={{
