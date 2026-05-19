@@ -175,7 +175,20 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
     if (purcs.status === 'fulfilled') setPurchases(purcs.value);
     if (txns.status === 'fulfilled') setTransactions(txns.value);
     if (wds.status === 'fulfilled') setWithdrawals(wds.value);
-    if (fbs.status === 'fulfilled') setFeedbacks(fbs.value);
+    if (fbs.status === 'fulfilled') {
+      // feedbackApi.getMine() returns /purchases — normalize to Purchase shape
+      // Actual Feedback objects come from local state; purchases carry rating/feedback fields
+      if (purcs.status === 'fulfilled') {
+        // purchases already set above; feedbacks derived in getFeedbacks()
+      }
+      // setFeedbacks for any actual Feedback objects if API returns them
+      const fbData = fbs.value;
+      if (Array.isArray(fbData) && fbData.length > 0 && fbData[0]?.rating !== undefined) {
+        // These are purchases (from feedbackApi.getMine = /purchases), skip — handled above
+      } else {
+        setFeedbacks(fbData);
+      }
+    }
     if (aps.status === 'fulfilled') setAppeals(aps.value);
   };
 
@@ -255,9 +268,15 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
   // ── Users ──────────────────────────────────────────────────
 
   const updateUser = (userId: string, updates: Partial<User>) => {
+    // Optimistic local update
     if (currentUser?.id === userId) setCurrentUser(prev => prev ? { ...prev, ...updates } : null);
     setUsers(prev => prev.map(u => u.id === userId ? { ...u, ...updates } : u));
-    if (currentUser?.id === userId) usersApi.update(updates).catch(() => {});
+    // Sync to backend and refresh user to get server-computed values
+    if (currentUser?.id === userId) {
+      usersApi.update(updates)
+        .then(() => usersApi.me().then(u => setCurrentUser(u)).catch(() => {}))
+        .catch(() => {});
+    }
   };
 
   const verifyUser = (userId: string, approve: boolean) => {
@@ -374,7 +393,10 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
   ) => {
     if (!currentUser) throw new Error('User not logged in');
     const normalized = (paymentMethod === 'wallet' || paymentMethod === 'points') ? 'Wallet' : paymentMethod;
-    await cartApi.checkout(normalized, useRewardPoints);
+    // FIX: send resourceIds from current cart to backend (backend requires them)
+    const currentCartItems = getCartItems();
+    const resourceIds = currentCartItems.map(r => r.id);
+    await cartApi.checkout(normalized, useRewardPoints, resourceIds);
     const [user, purcs, txns] = await Promise.allSettled([
       usersApi.me(), purchasesApi.getMine(), transactionsApi.getMine(),
     ]);
@@ -421,22 +443,78 @@ export function MockDataProvider({ children }: { children: ReactNode }) {
   // ── Feedback ───────────────────────────────────────────────
 
   const addFeedback = (feedback: Omit<Feedback, 'id' | 'createdAt'>) => {
-    feedbackApi.create(feedback)
-      .then(f => setFeedbacks(prev => [...prev, f]))
-      .catch(() => {});
+    // FIX: map frontend Feedback shape to backend FeedbackDto.CreateRequest shape
+    const payload: any = {
+      type: feedback.type,
+      rating: feedback.rating,
+      comment: feedback.comment,
+      itemId: feedback.itemId,
+      itemTitle: feedback.itemTitle,
+    };
+    // If there is a purchaseId (item feedback from checkout), use purchases/rate endpoint instead
+    if ((feedback as any).purchaseId) {
+      payload.purchaseId = (feedback as any).purchaseId;
+    }
+    feedbackApi.create(payload)
+      .then(f => {
+        const normalized: Feedback = {
+          id: f.id || `fb-${Date.now()}`,
+          userId: currentUser?.id || '',
+          type: feedback.type,
+          rating: feedback.rating,
+          comment: feedback.comment,
+          itemId: feedback.itemId,
+          itemTitle: feedback.itemTitle,
+          createdAt: f.createdAt || new Date().toISOString(),
+        };
+        setFeedbacks(prev => [...prev, normalized]);
+      })
+      .catch(() => {
+        // Optimistic fallback — add locally even if backend call fails
+        setFeedbacks(prev => [...prev, {
+          ...feedback, id: `fb-${Date.now()}`, createdAt: new Date().toISOString()
+        }]);
+      });
   };
 
-  const getFeedbacks = (): Feedback[] =>
-    currentUser ? feedbacks.filter(f => f.userId === currentUser.id) : [];
+  const getFeedbacks = (): Feedback[] => {
+    if (!currentUser) return [];
+    // feedbacks state is populated from feedbackApi.getMine() which returns purchases
+    // Normalize purchase ratings into Feedback shape for display
+    const fromPurchases: Feedback[] = purchases
+      .filter(p => p.userId === currentUser.id && p.rating !== undefined && p.rating !== null)
+      .map(p => ({
+        id: `fb-purchase-${p.id}`,
+        userId: p.userId,
+        type: 'item' as const,
+        rating: p.rating!,
+        comment: p.feedback || '',
+        itemId: p.resourceId,
+        itemTitle: resources.find(r => r.id === p.resourceId)?.title,
+        createdAt: p.purchasedAt,
+      }));
+    // Merge with any locally-created feedbacks (system feedback)
+    const localSystem = feedbacks.filter(f => f.userId === currentUser.id && f.type === 'system');
+    return [...fromPurchases, ...localSystem];
+  };
 
   // ── Transactions ───────────────────────────────────────────
 
   const addTransaction = (transaction: Omit<Transaction, 'id' | 'createdAt'>) => {
+    // FIX: handle all transaction types that need backend calls
     if (transaction.type === 'add') {
-      transactionsApi.addTopup(transaction)
+      // BDT wallet top-up request
+      transactionsApi.addTopup({
+        amount: transaction.amount,
+        paymentMethod: transaction.paymentMethod,
+        paymentPhone: (transaction as any).paymentPhone,
+        transactionNumber: (transaction as any).transactionNumber,
+      })
         .then(t => setTransactions(prev => [...prev, t]))
         .catch(() => {});
     }
+    // For membership, withdrawal, and other local-only types: optimistic local update only
+    // (these are handled directly by their own API calls in the respective handlers)
   };
 
   const topupPoints = (_userId: string, points: number, bdtCost: number) => {
